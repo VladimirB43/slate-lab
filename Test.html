@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Test výběru souboru</title>
+<style>
+  body { font-family: sans-serif; padding: 24px; background: #17181a; color: #eceef0; }
+  #result { margin-top: 20px; padding: 16px; background: #2a2c30; border-radius: 8px; font-size: 15px; line-height: 1.6; white-space: pre-wrap; }
+  input { font-size: 18px; padding: 12px; }
+</style>
+</head>
+<body>
+  <h2>Holý test výběru souboru</h2>
+  <p>Klepni na tlačítko, vyber fotku, a sleduj, co se objeví níž.</p>
+  <input type="file" id="f" accept="image/*">
+  <div id="result">Zatím nic nevybráno.</div>
+
+  <script>
+    const result = document.getElementById('result');
+    document.getElementById('f').addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        result.textContent = 'ÚSPĚCH!\nNázev: ' + file.name + '\nVelikost: ' + file.size + ' B\nTyp: ' + file.type;
+        result.style.background = '#1e3a1e';
+      } else {
+        result.textContent = 'change event proběhl, ale files bylo prázdné.';
+        result.style.background = '#3a1e1e';
+      }
+    });
+  </script>
+</body>
+</html>
