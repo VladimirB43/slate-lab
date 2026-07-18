@@ -1,0 +1,2099 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Slate Lab</title>
+<style>
+:root {
+  /* ---- Graphite palette (monochrome — no saturated accent) ---- */
+  --bg: #17181a;
+  --surface: #1f2124;
+  --surface-raised: #2a2c30;
+  --text: #eceef0;
+  --text-dim: #85888d;
+  --accent: #eceef0;
+  --accent-dim: #b8bbc0;
+  --border: #313437;
+
+  /* The photo itself stays on a neutral dark surround regardless of the
+     UI theme — same reason every photo app (Lightroom, VSCO, Snapseed)
+     keeps a dark canvas even in a light theme: a bright surround biases
+     how you judge exposure and color in the image itself. */
+  --stage-bg: #121212;
+  --stage-chrome-bg: rgba(20, 20, 22, 0.82);
+  --stage-chrome-border: rgba(255, 255, 255, 0.14);
+  --stage-chrome-text: #eceef0;
+
+  --top-bar-height: 50px;
+  --nav-height: 68px;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-top: env(safe-area-inset-top, 0px);
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  overflow: hidden;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+button { font-family: inherit; }
+
+/* ---------- Top bar ---------- */
+
+#top-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: calc(var(--top-bar-height) + var(--safe-top));
+  padding-top: var(--safe-top);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-left: 4px;
+  padding-right: 4px;
+  z-index: 20;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.icon-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 8px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: color 0.15s ease, background-color 0.15s ease, transform 0.1s ease;
+}
+
+.icon-btn svg { width: 19px; height: 19px; flex-shrink: 0; }
+
+/* Import is a same-origin iframe containing nothing but a plain, default
+   <input type="file"> — the exact minimal setup that was proven to work
+   in isolation. Embedding it via iframe (instead of styling an input
+   directly in the main page) sidesteps whatever it is about the main
+   page's input handling that was silently swallowing the file picker's
+   result. The selected File crosses back into the app via postMessage. */
+.import-btn-wrap {
+  position: relative;
+  overflow: hidden;
+}
+.import-frame-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  opacity: 0;
+}
+.icon-btn:disabled { opacity: 0.35; }
+.icon-btn:not(:disabled):active {
+  background: var(--surface-raised);
+  transform: scale(0.94);
+}
+
+/* ---------- Stage ---------- */
+
+#stage {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: calc(var(--top-bar-height) + var(--safe-top));
+  bottom: calc(var(--nav-height) + var(--safe-bottom));
+  background: var(--stage-bg);
+  transition: top 0s, bottom 0s; /* snap instantly; chrome fade + photo-layer resize carry the animation */
+}
+
+#zoom-viewport {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  touch-action: manipulation;
+}
+
+#zoom-viewport.zoomed {
+  display: block;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x pan-y;
+}
+
+#canvas-stack {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+  font-size: 0;
+}
+
+.photo-layer {
+  display: block;
+  max-width: none;
+  /* This is what makes zooming in/out AND the photo growing during
+     fullscreen edit mode animate smoothly — a single cheap CSS rule
+     instead of any JS-driven per-frame resize work. Draft-mode render
+     during slider drags never changes width/height, only backing-store
+     density, so it never triggers this transition. */
+  transition: width 0.22s var(--ease), height 0.22s var(--ease);
+}
+
+#photo-canvas-original {
+  position: absolute;
+  top: 0;
+  left: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+#canvas-stack.show-original #photo-canvas-original { opacity: 1; }
+#canvas-stack.show-original #photo-canvas { opacity: 0; }
+
+#empty-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--text-dim);
+  pointer-events: none;
+}
+
+#empty-state.hidden { display: none; }
+
+.empty-title {
+  font-size: 15px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--text);
+  margin: 0 0 10px;
+}
+
+.empty-hint { font-size: 14px; margin: 0; }
+
+/* ---------- Bottom navigation ---------- */
+
+#bottom-nav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(var(--nav-height) + var(--safe-bottom));
+  padding-bottom: var(--safe-bottom);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: stretch;
+  z-index: 20;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.nav-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 500;
+  transition: color 0.15s ease, transform 0.1s ease;
+}
+
+.nav-tab svg { width: 22px; height: 22px; }
+.nav-tab:disabled { opacity: 0.35; }
+.nav-tab.active { color: var(--accent); }
+.nav-tab:not(:disabled):active { transform: scale(0.93); }
+
+.nav-indicator {
+  position: absolute;
+  top: 0;
+  height: 2px;
+  width: 0;
+  left: 0;
+  background: var(--accent);
+  border-radius: 1px;
+  opacity: 0;
+  transition: left 0.25s var(--ease), width 0.25s var(--ease), opacity 0.15s ease;
+}
+
+.nav-indicator.visible { opacity: 1; }
+
+/* ---------- Drawers ---------- */
+
+.drawer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--nav-height) + var(--safe-bottom));
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  border-radius: 16px 16px 0 0;
+  transform: translateY(100%);
+  transition: transform 0.25s var(--ease), opacity 0.2s ease;
+  z-index: 10;
+  padding: 10px 0 14px;
+}
+
+.drawer.open { transform: translateY(0); }
+
+.drawer-handle {
+  width: 36px;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  margin: 0 auto 12px;
+  transition: opacity 0.18s ease;
+}
+
+/* ---------- Looks drawer ---------- */
+
+.looks-list {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding: 0 16px;
+  scrollbar-width: none;
+}
+
+.looks-list::-webkit-scrollbar { display: none; }
+
+.look-item {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  transition: transform 0.1s ease;
+}
+
+.look-item:active { transform: scale(0.95); }
+
+.look-thumb {
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  object-fit: cover;
+  border: 2px solid transparent;
+  background: var(--surface-raised);
+  display: block;
+  transition: border-color 0.15s ease;
+}
+
+.look-item.selected .look-thumb { border-color: var(--accent); }
+
+.look-name {
+  font-size: 11px;
+  color: var(--text-dim);
+  max-width: 70px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.look-item.selected .look-name { color: var(--accent); }
+
+/* ---------- Edit drawer (compact, Lightroom-style) ---------- */
+
+.edit-drawer { padding-bottom: calc(10px + var(--safe-bottom)); }
+
+.edit-value-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 20px 8px;
+  transition: opacity 0.18s ease;
+}
+
+.edit-active-label {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.edit-active-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
+}
+
+.edit-reset-btn { margin-left: 10px; transition: opacity 0.18s ease; }
+
+.text-btn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 6px 4px;
+}
+
+.text-btn:active { opacity: 0.6; }
+
+.edit-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+/* ---------- Slider: bigger thumb, thicker fill, bubble tracks the drag ---------- */
+
+.slider-wrap {
+  position: relative;
+  margin: 22px 20px 6px;
+}
+
+.adjust-slider {
+  display: block;
+  width: 100%;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border);
+  outline: none;
+}
+
+.adjust-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 3px solid var(--surface);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+  margin-top: -11px;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.adjust-slider::-moz-range-thumb {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 3px solid var(--surface);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.adjust-slider::-moz-range-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border);
+}
+
+.slider-wrap.dragging .adjust-slider::-webkit-slider-thumb {
+  transform: scale(1.15);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.55);
+}
+
+.slider-wrap.dragging .adjust-slider::-moz-range-thumb {
+  transform: scale(1.15);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.55);
+}
+
+.slider-bubble {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  transform: translate(-50%, -8px) scale(0.85);
+  transform-origin: bottom center;
+  background: var(--text);
+  color: var(--surface);
+  font-size: 12.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  padding: 4px 9px;
+  border-radius: 7px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.slider-bubble.visible {
+  opacity: 1;
+  transform: translate(-50%, -10px) scale(1);
+}
+
+.edit-tabs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  padding: 4px 16px 0;
+  scrollbar-width: none;
+  transition: opacity 0.18s ease;
+}
+
+.edit-tabs::-webkit-scrollbar { display: none; }
+
+.edit-tab {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 6px 10px 8px;
+  white-space: nowrap;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.edit-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* ---------- Lab drawer (architecture placeholder) ---------- */
+
+.lab-header { padding: 0 20px 10px; }
+
+.lab-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 20px 4px;
+}
+
+.lab-chip {
+  background: var(--surface-raised);
+  color: var(--text-dim);
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 8px 14px;
+  border-radius: 20px;
+  border: 1px dashed var(--border);
+  opacity: 0.75;
+}
+
+.lab-note {
+  padding: 10px 20px calc(4px + var(--safe-bottom));
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* ---------- Info drawer ---------- */
+
+.info-drawer {
+  max-height: 62vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.histogram-canvas {
+  display: block;
+  width: calc(100% - 40px);
+  height: 90px;
+  margin: 2px 20px 10px;
+}
+
+.info-list {
+  padding: 0 20px calc(6px + var(--safe-bottom));
+  display: flex;
+  flex-direction: column;
+}
+
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.info-row:last-child { border-bottom: none; }
+
+.info-label { font-size: 12.5px; color: var(--text-dim); }
+
+.info-value {
+  font-size: 13.5px;
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+</style>
+</head>
+<body>
+
+<script>
+  // TEMPORARY DIAGNOSTIC — catches ANY uncaught JS error anywhere on the
+  // page and shows it directly on screen, since we have no console access.
+  window.addEventListener("error", function (e) {
+    var div = document.createElement("div");
+    div.style.cssText =
+      "position:fixed;top:0;left:0;right:0;background:#c0392b;color:#fff;" +
+      "padding:14px;z-index:999999;font-size:13px;white-space:pre-wrap;" +
+      "font-family:monospace;line-height:1.5;";
+    div.textContent =
+      "JS ERROR: " + e.message + "\n" +
+      "file: " + (e.filename || "?") + "\n" +
+      "line: " + (e.lineno || "?") + " col: " + (e.colno || "?");
+    document.body.appendChild(div);
+  });
+</script>
+
+
+  <!-- Top bar: Import / Info / Export -->
+  <header id="top-bar">
+    <div id="btn-import" class="icon-btn import-btn-wrap" aria-label="Importovat fotku">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 4v10M8 10l4 4 4-4"/>
+        <path d="M5 18h14"/>
+      </svg>
+      <span>Import</span>
+    </div>
+    <button id="btn-info" class="icon-btn" disabled aria-label="Informace o fotografii">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="8.3"/>
+        <line x1="12" y1="11" x2="12" y2="16"/>
+        <circle cx="12" cy="8" r="0.6" fill="currentColor" stroke="none"/>
+      </svg>
+      <span>Info</span>
+    </button>
+    <button id="btn-export" class="icon-btn" disabled aria-label="Exportovat fotku">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 14V4M8 8l4-4 4 4"/>
+        <path d="M5 18h14"/>
+      </svg>
+      <span>Export</span>
+    </button>
+  </header>
+
+  <!-- Photo stage: canvas fills as much of the screen as possible -->
+  <main id="stage">
+    <div id="zoom-viewport">
+      <!-- canvas-stack: two layers, exactly overlapping. #photo-canvas-original
+           is pre-rendered and stays hidden (opacity:0) until a press-and-hold
+           on the photo reveals it — a pure CSS swap, no redraw on demand. -->
+      <div id="canvas-stack">
+        <canvas id="photo-canvas-original" class="photo-layer"></canvas>
+        <canvas id="photo-canvas" class="photo-layer"></canvas>
+      </div>
+    </div>
+
+    <div id="empty-state">
+      <p class="empty-title">Slate Lab</p>
+      <p class="empty-hint">Klepni na Import a vyber fotku</p>
+    </div>
+  </main>
+
+  <!-- Looks drawer -->
+  <section id="looks-drawer" class="drawer" aria-hidden="true">
+    <div class="drawer-handle" id="looks-drawer-handle"></div>
+    <div id="looks-list" class="looks-list"></div>
+  </section>
+
+  <!-- Edit drawer — compact, Lightroom-style: one slider whose target is
+       chosen from the scrollable tab row underneath it. -->
+  <section id="edit-drawer" class="drawer edit-drawer" aria-hidden="true">
+    <div class="drawer-handle" id="edit-drawer-handle"></div>
+
+    <div class="edit-value-row">
+      <span id="edit-active-label" class="edit-active-label">Exposure</span>
+      <span id="edit-active-value" class="edit-active-value">+0.0 EV</span>
+      <button id="btn-reset-adjustments" class="text-btn edit-reset-btn">Reset</button>
+    </div>
+
+    <div class="slider-wrap" id="slider-wrap">
+      <div id="slider-bubble" class="slider-bubble">0</div>
+      <input type="range" id="edit-slider" class="adjust-slider" min="-100" max="100" value="0">
+    </div>
+
+    <div id="edit-tabs" class="edit-tabs"></div>
+  </section>
+
+  <!-- Lab drawer — architecture placeholder for future tools -->
+  <section id="lab-drawer" class="drawer lab-drawer" aria-hidden="true">
+    <div class="drawer-handle" id="lab-drawer-handle"></div>
+    <div class="lab-header">
+      <span class="edit-title">Lab</span>
+    </div>
+    <div id="lab-tools" class="lab-tools"></div>
+    <p class="lab-note">Připravujeme: grain, fade, halation, color grading a ukládání vlastních looků.</p>
+  </section>
+
+  <!-- Info drawer — EXIF, resolution, file size, histogram -->
+  <section id="info-drawer" class="drawer info-drawer" aria-hidden="true">
+    <div class="drawer-handle" id="info-drawer-handle"></div>
+    <canvas id="histogram-canvas" class="histogram-canvas"></canvas>
+    <div id="info-list" class="info-list"></div>
+  </section>
+
+  <!-- Bottom navigation: Looks / Edit / Lab -->
+  <nav id="bottom-nav">
+    <div id="nav-indicator" class="nav-indicator" aria-hidden="true"></div>
+    <button id="tab-looks" class="nav-tab" data-tab="looks" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 20L15 9"/>
+        <path d="M17 3l1 2 2 1-2 1-1 2-1-2-2-1 2-1z"/>
+      </svg>
+      <span>Looks</span>
+    </button>
+    <button id="tab-edit" class="nav-tab" data-tab="edit" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="4" y1="7" x2="20" y2="7"/>
+        <circle cx="9" cy="7" r="1.8" fill="currentColor" stroke="none"/>
+        <line x1="4" y1="12" x2="20" y2="12"/>
+        <circle cx="15" cy="12" r="1.8" fill="currentColor" stroke="none"/>
+        <line x1="4" y1="17" x2="20" y2="17"/>
+        <circle cx="11" cy="17" r="1.8" fill="currentColor" stroke="none"/>
+      </svg>
+      <span>Edit</span>
+    </button>
+    <button id="tab-lab" class="nav-tab" data-tab="lab" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9 3h6M10 3v6l-5.3 9.2A1 1 0 0 0 5.6 20h12.8a1 1 0 0 0 .87-1.5L14 9V3"/>
+        <path d="M7.6 14.5h8.8"/>
+      </svg>
+      <span>Lab</span>
+    </button>
+  </nav>
+
+<!-- ===== looks.js ===== -->
+<script>
+// looks.js
+// Pure data module. A "look" is just a name plus a CSS filter recipe.
+// It knows nothing about canvas, DOM, or files — this keeps it trivial
+// to add, tweak, or reorder looks without touching rendering code.
+//
+// filter uses the standard CSS <filter-function> syntax, applied to the
+// canvas context via ctx.filter. Keeping looks as filter strings (instead
+// of per-pixel math) keeps live preview fast enough to run on every
+// pointer/tap without any debouncing.
+//
+// No ES modules here on purpose — plain <script> tags loaded in order
+// (looks.js, engine.js, ui.js, app.js), sharing one namespace object,
+// so the app runs from a direct file:// open too, not just a local
+// server. Everything private to this file stays inside the IIFE; only
+// what's attached to SlateLab is visible to the other scripts.
+
+(function () {
+  "use strict";
+  const SlateLab = (window.SlateLab = window.SlateLab || {});
+
+  const LOOKS = [
+    {
+      id: "original",
+      name: "Original",
+      filter: "none",
+    },
+    {
+      id: "fuji-classic-chrome",
+      name: "Classic Chrome",
+      filter: "contrast(1.1) saturate(0.82) sepia(0.08) hue-rotate(-6deg) brightness(0.98)",
+    },
+    {
+      id: "fuji-provia",
+      name: "Provia",
+      filter: "contrast(1.05) saturate(1.08) brightness(1.02)",
+    },
+    {
+      id: "fuji-velvia",
+      name: "Velvia",
+      filter: "contrast(1.15) saturate(1.4) brightness(0.98)",
+    },
+    {
+      id: "fuji-acros",
+      name: "Acros",
+      filter: "grayscale(1) contrast(1.12) brightness(1.02)",
+    },
+    {
+      id: "faded-film",
+      name: "Faded Film",
+      filter: "contrast(0.92) saturate(0.85) sepia(0.15) brightness(1.05)",
+    },
+    {
+      id: "kodak-gold",
+      name: "Kodak Gold",
+      filter: "contrast(1.05) saturate(1.15) sepia(0.12) hue-rotate(-4deg) brightness(1.03)",
+    },
+  ];
+
+  function getLookById(id) {
+    return LOOKS.find((look) => look.id === id) ?? LOOKS[0];
+  }
+
+  SlateLab.LOOKS = LOOKS;
+  SlateLab.getLookById = getLookById;
+})();
+
+</script>
+
+<!-- ===== engine.js ===== -->
+<script>
+// engine.js
+// Owns rendering, plus everything needed to describe the loaded photo
+// (metadata, EXIF, histogram). It never touches buttons or drawers.
+//
+// Rendering is a hybrid pipeline, deliberately:
+//   1. The Look is still a CSS filter (sepia/hue-rotate/etc, see looks.js)
+//      — cheap, GPU-composited, applied via ctx.filter on drawImage.
+//   2. The 8 tonal adjustments (Exposure..White Balance) are a REAL
+//      single-pass pixel engine over Uint8ClampedArray — proper exposure/
+//      contrast math and luminance-masked tone ranges, the same shape of
+//      math Lightroom uses, instead of blanket CSS filter functions that
+//      can't distinguish shadows from midtones from highlights at all.
+// Looks stay CSS-filter-based for now; converting them into engine
+// "recipes" (curves/color-matrix/split-toning) is the planned v3 step,
+// kept separate so the app is never in a half-broken state along the way.
+//
+// Two canvases are kept in sync — #photo-canvas (look + adjustments) and
+// #photo-canvas-original (untouched) — so "press and hold" in ui.js is a
+// pure CSS opacity swap, zero redraw cost.
+//
+// Performance: the pixel pass is now doing real work (8 operations per
+// pixel instead of 1), so while a slider is being dragged
+// (beginAdjustDrag/endAdjustDrag) rendering drops to a capped "draft"
+// resolution — the CSS box size never changes, so nothing visibly
+// resizes, only crispness dips very slightly for the duration of the
+// drag. The moment the finger lifts, one full-resolution frame snaps it
+// sharp again. The pixel pass is skipped entirely when every adjustment
+// is at its default value, so a freshly imported photo costs nothing.
+
+// No ES modules here on purpose — see looks.js for why. Loaded after
+// looks.js, before ui.js and app.js.
+
+(function () {
+  "use strict";
+  const SlateLab = (window.SlateLab = window.SlateLab || {});
+  const { getLookById } = SlateLab;
+
+  const ADJUSTMENTS_META = [
+    {
+      key: "exposure",
+      label: "Exposure",
+    min: -100,
+    max: 100,
+    default: 0,
+    format: (v) => `${v >= 0 ? "+" : ""}${((v / 100) * 2).toFixed(1)} EV`,
+  },
+  {
+    key: "contrast",
+    label: "Contrast",
+    min: -100,
+    max: 100,
+    default: 0,
+    format: (v) => `${v > 0 ? "+" : ""}${v}`,
+  },
+  {
+    key: "highlights",
+    label: "Highlights",
+    min: -100,
+    max: 100,
+    default: 0,
+    format: (v) => `${v > 0 ? "+" : ""}${v}`,
+  },
+  {
+    key: "shadows",
+    label: "Shadows",
+    min: -100,
+    max: 100,
+    default: 0,
+    format: (v) => `${v > 0 ? "+" : ""}${v}`,
+  },
+  {
+    key: "whites",
+    label: "Whites",
+    min: -100,
+    max: 100,
+    default: 0,
+    format: (v) => `${v > 0 ? "+" : ""}${v}`,
+  },
+  {
+    key: "blacks",
+    label: "Blacks",
+    min: -100,
+    max: 100,
+    default: 0,
+    format: (v) => `${v > 0 ? "+" : ""}${v}`,
+  },
+  {
+    key: "saturation",
+    label: "Saturation",
+    min: -100,
+    max: 100,
+    default: 0,
+    format: (v) => `${v > 0 ? "+" : ""}${v}`,
+  },
+  {
+    key: "temperature",
+    label: "White Balance",
+    min: -100,
+    max: 100,
+    default: 0,
+    format: (v) => `${v > 0 ? "+" : ""}${v}`,
+  },
+];
+
+const DEFAULT_ADJUSTMENTS = Object.fromEntries(ADJUSTMENTS_META.map((a) => [a.key, a.default]));
+
+// Future Lab tools. Not wired to any rendering logic yet — this is the
+// architecture placeholder from the spec: the drawer, the tab, and this
+// registry already exist, so adding a real tool later is "implement the
+// engine math + flip comingSoon to false", not "invent the UI from
+// scratch". ui.js renders these as disabled chips for now.
+const LAB_TOOLS_META = [
+  { key: "grain", label: "Grain", comingSoon: true },
+  { key: "fade", label: "Fade", comingSoon: true },
+  { key: "halation", label: "Halation", comingSoon: true },
+  { key: "colorGrading", label: "Color Grading", comingSoon: true },
+  { key: "customLooks", label: "Vlastní Looky", comingSoon: true },
+];
+
+const ZOOM_MAX_DIMENSION = 2400; // long-edge cap for "100%" zoom, memory safety
+// Long-edge cap while a slider is dragging. Lower than before (was 900)
+// because the pixel pass now does 8 operations per pixel instead of 1 —
+// this keeps a single frame's worth of work small enough to stay smooth
+// on older phones while actively dragging.
+const DRAFT_MAX_DIMENSION = 700;
+
+function clamp255(v) {
+  return v < 0 ? 0 : v > 255 ? 255 : v;
+}
+
+/** Smooth 0..1 ramp between edge0 and edge1 (edge0 can be > edge1 for a falling ramp). */
+function smoothstep(edge0, edge1, x) {
+  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+class PhotoEngine {
+  /**
+   * @param {Object} refs
+   * @param {HTMLCanvasElement} refs.canvas           edited layer
+   * @param {HTMLCanvasElement} refs.originalCanvas    original layer
+   * @param {HTMLElement} refs.stage                   fixed full-screen container
+   * @param {HTMLElement} refs.zoomViewport            scroll container for zoomed panning
+   */
+  constructor({ canvas, originalCanvas, stage, zoomViewport }) {
+    this.canvas = canvas;
+    this.originalCanvas = originalCanvas;
+    this.ctx = canvas.getContext("2d");
+    this.originalCtx = originalCanvas.getContext("2d");
+    this.stage = stage;
+    this.zoomViewport = zoomViewport;
+
+    /** @type {ImageBitmap|null} full-resolution decoded image */
+    this.image = null;
+
+    this.currentLook = getLookById("original");
+    this.adjustments = { ...DEFAULT_ADJUSTMENTS };
+
+    this.isZoomed = false;
+    this._zoomSize = null;
+    this._isDragging = false;
+    this._rafPending = false;
+
+    this._fileMeta = null; // { name, sizeBytes }
+    this._exif = null;
+
+    window.addEventListener("resize", () => {
+      if (this.isZoomed) {
+        this.exitZoom();
+      } else {
+        this.scheduleRender();
+      }
+    });
+  }
+
+  get hasImage() {
+    return this.image !== null;
+  }
+
+  // ---------- Loading ----------
+
+  /** @param {File} file */
+  async loadImageFromFile(file) {
+    this._fileMeta = { name: file.name, sizeBytes: file.size };
+    // EXIF lives in the first few KB of a JPEG, so reading it doesn't
+    // block on decoding the (potentially huge) pixel data — both run
+    // concurrently.
+    const [bitmap, exif] = await Promise.all([
+      createImageBitmap(file, { imageOrientation: "from-image" }),
+      parseExif(file).catch(() => null),
+    ]);
+    this._exif = exif;
+    this.setImage(bitmap);
+    return bitmap;
+  }
+
+  /** @param {ImageBitmap} bitmap */
+  setImage(bitmap) {
+    if (this.image) this.image.close?.();
+    this.image = bitmap;
+    this.currentLook = getLookById("original");
+    this.adjustments = { ...DEFAULT_ADJUSTMENTS };
+    this.isZoomed = false;
+    this._isDragging = false;
+    this.render();
+  }
+
+  // ---------- Look & adjustments ----------
+
+  /** @param {string} lookId */
+  setLook(lookId) {
+    this.currentLook = getLookById(lookId);
+    this.scheduleRender();
+  }
+
+  /**
+   * @param {string} key one of ADJUSTMENTS_META keys
+   * @param {number} value
+   */
+  setAdjustment(key, value) {
+    if (!(key in this.adjustments)) return;
+    this.adjustments[key] = value;
+    this.scheduleRender();
+  }
+
+  resetAdjustments() {
+    this.adjustments = { ...DEFAULT_ADJUSTMENTS };
+    this.scheduleRender();
+  }
+
+  getAdjustments() {
+    return { ...this.adjustments };
+  }
+
+  /** Call when a slider drag starts — switches rendering into cheap draft mode. */
+  beginAdjustDrag() {
+    this._isDragging = true;
+  }
+
+  /** Call when a slider drag ends — renders one final full-resolution frame. */
+  endAdjustDrag() {
+    this._isDragging = false;
+    this.scheduleRender();
+  }
+
+  /** Coalesce rapid slider/resize events into one render per animation frame. */
+  scheduleRender() {
+    if (this._rafPending) return;
+    this._rafPending = true;
+    requestAnimationFrame(() => {
+      this._rafPending = false;
+      this.render();
+    });
+  }
+
+  // ---------- Rendering ----------
+
+  /**
+   * Repaint at whatever size is currently relevant — the fit-to-stage
+   * size normally, or the stored zoom size if zoomed in. Single entry
+   * point used after ANY state change (look, adjustment, resize, chrome
+   * layout change), so nothing is ever silently left stale.
+   */
+  render() {
+    if (!this.image) return;
+    const size = this.isZoomed ? this._zoomSize : this._fitToStage();
+    this._renderPair(size.width, size.height, this._isDragging);
+  }
+
+  /**
+   * Re-fit against whatever the stage's current box is. Call this right
+   * after toggling the CSS class that hides/shows the chrome — the class
+   * change is applied synchronously, so the very next layout read already
+   * reflects the new, larger (or smaller) stage size.
+   */
+  refitToStage() {
+    if (this.isZoomed) return;
+    this.render();
+  }
+
+  _fitToStage() {
+    const boxW = this.stage.clientWidth;
+    const boxH = this.stage.clientHeight;
+    const imgRatio = this.image.width / this.image.height;
+    const boxRatio = boxW / boxH;
+
+    if (imgRatio > boxRatio) {
+      return { width: boxW, height: boxW / imgRatio };
+    }
+    return { width: boxH * imgRatio, height: boxH };
+  }
+
+  // ---------- Zoom ----------
+
+  toggleZoom(clientX, clientY) {
+    if (!this.image) return;
+    if (this.isZoomed) {
+      this.exitZoom();
+    } else {
+      this.enterZoom(clientX, clientY);
+    }
+  }
+
+  enterZoom(clientX, clientY) {
+    const rect = this.canvas.getBoundingClientRect();
+    const fracX = rect.width ? (clientX - rect.left) / rect.width : 0.5;
+    const fracY = rect.height ? (clientY - rect.top) / rect.height : 0.5;
+
+    const longEdge = Math.max(this.image.width, this.image.height);
+    const scale = Math.min(1, ZOOM_MAX_DIMENSION / longEdge);
+    const width = Math.round(this.image.width * scale);
+    const height = Math.round(this.image.height * scale);
+
+    this.isZoomed = true;
+    this._zoomSize = { width, height };
+    this._renderPair(width, height, false);
+
+    const vw = this.zoomViewport.clientWidth;
+    const vh = this.zoomViewport.clientHeight;
+    this.zoomViewport.scrollLeft = Math.max(0, fracX * width - vw / 2);
+    this.zoomViewport.scrollTop = Math.max(0, fracY * height - vh / 2);
+  }
+
+  exitZoom() {
+    if (!this.image) return;
+    this.isZoomed = false;
+    this._zoomSize = null;
+    this.render();
+  }
+
+  // ---------- Shared paint path ----------
+
+  /**
+   * Size both canvas layers identically and paint them. drawW/drawH are
+   * CSS pixels and always reflect the true on-screen box size — draft
+   * mode only reduces the backing-store resolution behind that same box.
+   * A CSS transition on width/height (see style.css) is what makes size
+   * changes (zoom, chrome hiding) animate smoothly; draft toggling alone
+   * never changes drawW/drawH, so it never triggers that transition.
+   */
+  _renderPair(drawW, drawH, draft) {
+    const normalDpr = Math.min(window.devicePixelRatio || 1, 3);
+    let dpr = normalDpr;
+
+    if (draft) {
+      const longEdge = Math.max(drawW, drawH) * normalDpr;
+      if (longEdge > DRAFT_MAX_DIMENSION) {
+        dpr = DRAFT_MAX_DIMENSION / Math.max(drawW, drawH);
+      }
+    }
+
+    const pixelW = Math.max(1, Math.round(drawW * dpr));
+    const pixelH = Math.max(1, Math.round(drawH * dpr));
+
+    for (const canvas of [this.canvas, this.originalCanvas]) {
+      canvas.width = pixelW;
+      canvas.height = pixelH;
+      canvas.style.width = `${drawW}px`;
+      canvas.style.height = `${drawH}px`;
+    }
+
+    const sx = pixelW / drawW;
+    const sy = pixelH / drawH;
+
+    this.ctx.setTransform(sx, 0, 0, sy, 0, 0);
+    this._composite(this.ctx, drawW, drawH, pixelW, pixelH);
+
+    this.originalCtx.setTransform(sx, 0, 0, sy, 0, 0);
+    this.originalCtx.clearRect(0, 0, drawW, drawH);
+    this.originalCtx.drawImage(this.image, 0, 0, drawW, drawH);
+  }
+
+  /**
+   * Draw the Look (CSS filter — cheap, unchanged approach) then, if any
+   * adjustment is non-default, run the real pixel engine in a SINGLE
+   * getImageData/putImageData pass — every operation reads/writes the
+   * same local r/g/b variables per pixel rather than looping over the
+   * image 8 separate times.
+   */
+  _composite(ctx, drawW, drawH, pixelW, pixelH) {
+    ctx.filter = this.currentLook.filter;
+    ctx.clearRect(0, 0, drawW, drawH);
+    ctx.drawImage(this.image, 0, 0, drawW, drawH);
+    ctx.filter = "none";
+
+    if (this._hasActiveAdjustments()) {
+      this._applyPixelPipeline(ctx, pixelW, pixelH);
+    }
+  }
+
+  _hasActiveAdjustments() {
+    const a = this.adjustments;
+    return (
+      a.exposure !== 0 ||
+      a.contrast !== 0 ||
+      a.highlights !== 0 ||
+      a.shadows !== 0 ||
+      a.whites !== 0 ||
+      a.blacks !== 0 ||
+      a.saturation !== 0 ||
+      a.temperature !== 0
+    );
+  }
+
+  /**
+   * The Slate Engine pixel pipeline. Processing order matters — it
+   * mirrors Lightroom's Basic panel:
+   *   White Balance → Exposure → Contrast → Whites → Blacks →
+   *   Highlights → Shadows → Saturation
+   * Whites/Blacks use a narrow, strong mask right at the tonal extremes
+   * (they set the "anchor points"); Highlights/Shadows use a broad, soft
+   * mask across the upper/lower half of the range (they reshape what's
+   * between those anchors). That distinction is exactly what a flat
+   * brightness()/contrast() CSS filter can't do — it treats every pixel
+   * the same regardless of how bright it already is.
+   */
+  _applyPixelPipeline(ctx, pixelW, pixelH) {
+    const { exposure, contrast, highlights, shadows, whites, blacks, saturation, temperature } = this.adjustments;
+
+    const expMul = Math.pow(2, (exposure / 100) * 2); // true photographic stops
+    const contrastMul = 1 + (contrast / 100) * 0.9;
+    const satMul = 1 + saturation / 100;
+    const wbR = (temperature / 100) * 35;
+    const wbB = -(temperature / 100) * 35;
+    const whitesAmt = (whites / 100) * 90;
+    const blacksAmt = (blacks / 100) * 90;
+    const highlightsAmt = (highlights / 100) * 70;
+    const shadowsAmt = (shadows / 100) * 70;
+
+    const imgData = ctx.getImageData(0, 0, pixelW, pixelH);
+    const data = imgData.data;
+
+    for (let i = 0; i < data.length; i += 4) {
+      // White balance (additive channel shift) + Exposure (true stops)
+      let r = (data[i] + wbR) * expMul;
+      let g = data[i + 1] * expMul;
+      let b = (data[i + 2] + wbB) * expMul;
+
+      // Contrast — pivot around mid-gray, same shape as Lightroom's
+      r = (r - 128) * contrastMul + 128;
+      g = (g - 128) * contrastMul + 128;
+      b = (b - 128) * contrastMul + 128;
+
+      r = clamp255(r);
+      g = clamp255(g);
+      b = clamp255(b);
+
+      const lum = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
+
+      // Whites/Blacks: narrow masks right at the extremes
+      const whiteMask = smoothstep(170, 255, lum * 255);
+      const blackMask = smoothstep(85, 0, lum * 255);
+      // Highlights/Shadows: broad, soft masks across half the range
+      const highMask = lum * lum;
+      const lowMask = (1 - lum) * (1 - lum);
+
+      const tonalDelta =
+        whitesAmt * whiteMask + blacksAmt * blackMask + highlightsAmt * highMask + shadowsAmt * lowMask;
+
+      r += tonalDelta;
+      g += tonalDelta;
+      b += tonalDelta;
+
+      // Saturation — blend toward/away from this pixel's own luminance
+      const lum2 = r * 0.299 + g * 0.587 + b * 0.114;
+      r = lum2 + (r - lum2) * satMul;
+      g = lum2 + (g - lum2) * satMul;
+      b = lum2 + (b - lum2) * satMul;
+
+      data[i] = clamp255(r);
+      data[i + 1] = clamp255(g);
+      data[i + 2] = clamp255(b);
+    }
+
+    ctx.putImageData(imgData, 0, 0);
+  }
+
+  // ---------- Photo info (Info panel) ----------
+
+  /** Static facts about the loaded photo: resolution, file size, EXIF. */
+  getPhotoInfo() {
+    if (!this.image) return null;
+    return {
+      width: this.image.width,
+      height: this.image.height,
+      fileName: this._fileMeta?.name ?? null,
+      fileSizeBytes: this._fileMeta?.sizeBytes ?? null,
+      exif: this._exif,
+    };
+  }
+
+  /**
+   * RGB histogram of the CURRENT edited result (look + adjustments
+   * applied) — sampled from a small downscaled copy, never the full
+   * image, so this is cheap enough to recompute every time the Info
+   * panel opens without any caching.
+   * @param {number} bins
+   * @returns {{r:number[], g:number[], b:number[]}}
+   */
+  computeHistogram(bins = 64) {
+    if (!this.image) return { r: [], g: [], b: [] };
+
+    const SAMPLE = 150;
+    const off = document.createElement("canvas");
+    off.width = SAMPLE;
+    off.height = SAMPLE;
+    const offCtx = off.getContext("2d");
+    // Reuse the exact same look+adjustments pipeline so the histogram
+    // matches what's actually on screen, not the raw original.
+    this._composite(offCtx, SAMPLE, SAMPLE, SAMPLE, SAMPLE);
+
+    const { data } = offCtx.getImageData(0, 0, SAMPLE, SAMPLE);
+    const r = new Array(bins).fill(0);
+    const g = new Array(bins).fill(0);
+    const b = new Array(bins).fill(0);
+    const scale = bins / 256;
+
+    for (let i = 0; i < data.length; i += 4) {
+      r[Math.min(bins - 1, Math.floor(data[i] * scale))]++;
+      g[Math.min(bins - 1, Math.floor(data[i + 1] * scale))]++;
+      b[Math.min(bins - 1, Math.floor(data[i + 2] * scale))]++;
+    }
+
+    const max = Math.max(1, ...r, ...g, ...b);
+    return {
+      r: r.map((v) => v / max),
+      g: g.map((v) => v / max),
+      b: b.map((v) => v / max),
+    };
+  }
+
+  // ---------- Export ----------
+
+  /**
+   * Render the current image + look + adjustments at full original
+   * resolution and return it as a JPEG Blob. Always full quality —
+   * completely separate from draft mode, which never touches export.
+   * @param {number} quality 0..1
+   * @returns {Promise<Blob>}
+   */
+  async exportBlob(quality = 0.95) {
+    if (!this.image) throw new Error("No image loaded to export.");
+
+    const off = document.createElement("canvas");
+    off.width = this.image.width;
+    off.height = this.image.height;
+    const offCtx = off.getContext("2d");
+
+    this._composite(offCtx, off.width, off.height, off.width, off.height);
+
+    return new Promise((resolve, reject) => {
+      off.toBlob(
+        (blob) => (blob ? resolve(blob) : reject(new Error("Export failed."))),
+        "image/jpeg",
+        quality
+      );
+    });
+  }
+}
+
+SlateLab.ADJUSTMENTS_META = ADJUSTMENTS_META;
+SlateLab.LAB_TOOLS_META = LAB_TOOLS_META;
+SlateLab.PhotoEngine = PhotoEngine;
+
+// ============================================================
+// EXIF parsing — minimal, dependency-free JPEG/TIFF reader.
+// Only the tags Slate Lab's Info panel actually shows are decoded;
+// GPS and maker-note blocks are intentionally skipped.
+// ============================================================
+
+const EXIF_TAGS = {
+  0x010f: "make",
+  0x0110: "model",
+  0x0112: "orientation",
+  0x0132: "dateTime",
+  0x829a: "exposureTime",
+  0x829d: "fNumber",
+  0x8827: "iso",
+  0x9003: "dateTimeOriginal",
+  0x920a: "focalLength",
+  0xa434: "lensModel",
+};
+const EXIF_SUBIFD_POINTER = 0x8769;
+
+const TYPE_SIZES = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 9: 4, 10: 8 };
+
+async function parseExif(file) {
+  // EXIF always lives near the start of the file — reading the first
+  // 128KB avoids pulling multi-megabyte photos into memory twice.
+  const buffer = await file.slice(0, 128 * 1024).arrayBuffer();
+  const view = new DataView(buffer);
+  if (view.byteLength < 4 || view.getUint16(0) !== 0xffd8) return null;
+
+  let offset = 2;
+  while (offset + 4 <= view.byteLength) {
+    const marker = view.getUint16(offset);
+    if (marker === 0xffe1) {
+      const segLength = view.getUint16(offset + 2);
+      const segStart = offset + 4;
+      if (
+        view.getUint32(segStart) === 0x45786966 && // "Exif"
+        view.getUint16(segStart + 4) === 0x0000
+      ) {
+        return readTiff(view, segStart + 6);
+      }
+      offset += 2 + segLength;
+    } else if (marker === 0xffd8 || (marker >= 0xffd0 && marker <= 0xffd7)) {
+      offset += 2;
+    } else if ((marker & 0xff00) === 0xff00) {
+      const segLength = view.getUint16(offset + 2);
+      offset += 2 + segLength;
+    } else {
+      break;
+    }
+  }
+  return null;
+}
+
+function readTiff(view, tiffStart) {
+  const little = view.getUint16(tiffStart) === 0x4949;
+  const u16 = (o) => view.getUint16(o, little);
+  const u32 = (o) => view.getUint32(o, little);
+
+  const ifd0Offset = u32(tiffStart + 4);
+  const raw = {};
+  readIFD(view, tiffStart, tiffStart + ifd0Offset, little, raw);
+  if (raw.__exifIFDOffset != null) {
+    readIFD(view, tiffStart, tiffStart + raw.__exifIFDOffset, little, raw);
+  }
+  return formatExif(raw);
+}
+
+function readIFD(view, tiffStart, ifdStart, little, out) {
+  if (ifdStart + 2 > view.byteLength) return;
+  const u16 = (o) => view.getUint16(o, little);
+  const u32 = (o) => view.getUint32(o, little);
+
+  const entryCount = u16(ifdStart);
+  for (let i = 0; i < entryCount; i++) {
+    const entryOffset = ifdStart + 2 + i * 12;
+    if (entryOffset + 12 > view.byteLength) break;
+
+    const tag = u16(entryOffset);
+    const type = u16(entryOffset + 2);
+    const count = u32(entryOffset + 4);
+    const typeSize = TYPE_SIZES[type];
+    if (!typeSize) continue;
+
+    const totalSize = typeSize * count;
+    const valueAt = totalSize <= 4 ? entryOffset + 8 : tiffStart + u32(entryOffset + 8);
+    if (valueAt < 0 || valueAt + totalSize > view.byteLength) continue;
+
+    if (tag === EXIF_SUBIFD_POINTER) {
+      out.__exifIFDOffset = u32(entryOffset + 8);
+      continue;
+    }
+
+    const name = EXIF_TAGS[tag];
+    if (!name) continue;
+
+    out[name] = readValue(view, valueAt, type, count, little);
+  }
+}
+
+function readValue(view, at, type, count, little) {
+  switch (type) {
+    case 2: {
+      // ASCII
+      const bytes = new Uint8Array(view.buffer, at, count);
+      let str = "";
+      for (const b of bytes) {
+        if (b === 0) break;
+        str += String.fromCharCode(b);
+      }
+      return str.trim();
+    }
+    case 3: // SHORT
+      return view.getUint16(at, little);
+    case 4: // LONG
+      return view.getUint32(at, little);
+    case 5: {
+      // RATIONAL
+      const num = view.getUint32(at, little);
+      const den = view.getUint32(at + 4, little);
+      return den ? num / den : 0;
+    }
+    case 10: {
+      // SRATIONAL
+      const num = view.getInt32(at, little);
+      const den = view.getInt32(at + 4, little);
+      return den ? num / den : 0;
+    }
+    default:
+      return null;
+  }
+}
+
+function formatExposureTime(seconds) {
+  if (!seconds) return null;
+  if (seconds >= 1) return `${seconds.toFixed(1)} s`;
+  return `1/${Math.round(1 / seconds)} s`;
+}
+
+function formatExif(raw) {
+  if (Object.keys(raw).length === 0) return null;
+  return {
+    make: raw.make || null,
+    model: raw.model || null,
+    lensModel: raw.lensModel || null,
+    dateTaken: raw.dateTimeOriginal || raw.dateTime || null,
+    exposureTime: formatExposureTime(raw.exposureTime),
+    fNumber: raw.fNumber ? `f/${raw.fNumber.toFixed(1)}` : null,
+    iso: raw.iso ? `ISO ${raw.iso}` : null,
+    focalLength: raw.focalLength ? `${Math.round(raw.focalLength)} mm` : null,
+  };
+}
+})();
+
+</script>
+
+<!-- ===== ui.js ===== -->
+<script>
+// ui.js
+// Everything that touches the DOM lives here. This module knows about
+// buttons, drawers, and gestures; it does NOT know how images are
+// decoded or how filters/adjustments/EXIF are extracted — it only calls
+// engine methods and renders what they return.
+
+// No ES modules here on purpose — see looks.js for why. Loaded after
+// looks.js and engine.js, before app.js.
+
+(function () {
+  "use strict";
+  const SlateLab = (window.SlateLab = window.SlateLab || {});
+  const { LOOKS, ADJUSTMENTS_META, LAB_TOOLS_META } = SlateLab;
+
+const HOLD_THRESHOLD_MS = 150; // press-and-hold vs. a tap in the double-tap sequence
+const DOUBLE_TAP_MS = 300;
+const DOUBLE_TAP_MAX_MOVE = 12; // px
+
+function formatFileSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+class UI {
+  /** @param {PhotoEngine} engine */
+  constructor(engine) {
+    this.engine = engine;
+
+    // Stage
+    this.stage = document.getElementById("stage");
+    this.zoomViewport = document.getElementById("zoom-viewport");
+    this.canvasStack = document.getElementById("canvas-stack");
+    this.canvas = document.getElementById("photo-canvas");
+    this.emptyState = document.getElementById("empty-state");
+
+    // Top bar
+    this.importBtn = document.getElementById("btn-import");
+    this.infoBtn = document.getElementById("btn-info");
+    this.exportBtn = document.getElementById("btn-export");
+
+    // Bottom nav
+    this.bottomNav = document.getElementById("bottom-nav");
+    this.navIndicator = document.getElementById("nav-indicator");
+    this.tabLooks = document.getElementById("tab-looks");
+    this.tabEdit = document.getElementById("tab-edit");
+    this.tabLab = document.getElementById("tab-lab");
+
+    // Drawers
+    this.looksDrawer = document.getElementById("looks-drawer");
+    this.looksDrawerHandle = document.getElementById("looks-drawer-handle");
+    this.looksList = document.getElementById("looks-list");
+
+    this.editDrawer = document.getElementById("edit-drawer");
+    this.editDrawerHandle = document.getElementById("edit-drawer-handle");
+    this.editActiveLabel = document.getElementById("edit-active-label");
+    this.editActiveValue = document.getElementById("edit-active-value");
+    this.sliderWrap = document.getElementById("slider-wrap");
+    this.sliderBubble = document.getElementById("slider-bubble");
+    this.editSlider = document.getElementById("edit-slider");
+    this.editTabs = document.getElementById("edit-tabs");
+    this.resetBtn = document.getElementById("btn-reset-adjustments");
+
+    this.labDrawer = document.getElementById("lab-drawer");
+    this.labDrawerHandle = document.getElementById("lab-drawer-handle");
+    this.labTools = document.getElementById("lab-tools");
+
+    this.infoDrawer = document.getElementById("info-drawer");
+    this.infoDrawerHandle = document.getElementById("info-drawer-handle");
+    this.infoList = document.getElementById("info-list");
+    this.histogramCanvas = document.getElementById("histogram-canvas");
+
+    this.selectedLookId = "original";
+    this.activeAdjustmentKey = ADJUSTMENTS_META[0].key;
+    this._thumbCache = null;
+    this.openDrawerName = null; // 'looks' | 'edit' | 'lab' | 'info' | null
+
+    this._holdTimer = null;
+    this._lastTap = null;
+  }
+
+  init() {
+    // TEMPORARY DIAGNOSTIC — if the page reloaded (e.g. Android killed
+    // the backgrounded tab while the photo picker was open) right after
+    // a file was selected, this proves it: the change handler's write
+    // to localStorage happens synchronously and survives even that,
+    // unlike anything written to the DOM.
+    try {
+      const last = localStorage.getItem("slateLabDebug");
+      if (last) {
+        const hint = document.querySelector(".empty-hint");
+        if (hint) hint.textContent = `DEBUG on load: last change event was: ${last}`;
+      }
+    } catch (e) {
+      // ignore storage errors
+    }
+
+    // Import: a same-origin iframe holding nothing but a plain, default
+    // <input type="file"> — the exact setup already proven to work on
+    // its own. The main page never touches a file input directly at
+    // all anymore; it just receives the picked File via postMessage,
+    // which uses the structured clone algorithm and can carry File
+    // objects natively.
+    this._mountDiagnosticInput();
+    window.addEventListener("message", (event) => {
+      const data = event.data;
+      if (!data || data.__slateLabFile !== true) return;
+      const file = data.file;
+      try {
+        localStorage.setItem(
+          "slateLabDebug",
+          JSON.stringify({
+            when: new Date().toISOString(),
+            fired: true,
+            fileName: file?.name ?? null,
+            fileSize: file?.size ?? null,
+            fileType: file?.type ?? null,
+          })
+        );
+      } catch (e) {
+        // ignore storage errors
+      }
+      const hint = document.querySelector(".empty-hint");
+      if (hint) {
+        hint.textContent = file
+          ? `DEBUG: file received via iframe — ${file.name || "(no name)"} | ${file.size || 0}B`
+          : "DEBUG: message arrived but file was empty";
+      }
+      if (!file) return;
+      this._handleFileSelected(file);
+    });
+
+    this.infoBtn.addEventListener("click", () => this._openDrawer("info"));
+    this.exportBtn.addEventListener("click", () => this._handleExport());
+
+    this.tabLooks.addEventListener("click", () => this._openDrawer("looks"));
+    this.tabEdit.addEventListener("click", () => this._openDrawer("edit"));
+    this.tabLab.addEventListener("click", () => this._openDrawer("lab"));
+
+    for (const handle of [this.looksDrawerHandle, this.editDrawerHandle, this.labDrawerHandle, this.infoDrawerHandle]) {
+      handle.addEventListener("click", () => this._closeAllDrawers());
+    }
+
+    this.resetBtn.addEventListener("click", () => {
+      this.engine.resetAdjustments();
+      this._selectAdjustmentTab(this.activeAdjustmentKey);
+    });
+
+    this._renderLookList();
+    this._buildEditTabs();
+    this._buildLabTools();
+    this._bindPhotoGestures();
+  }
+
+  /**
+   * TEMPORARY DIAGNOSTIC — a completely plain, visible, unstyled file
+   * input, wired up exactly like the standalone test page that was
+   * proven to work. If THIS also fails inside the real app, the cause
+   * is something about the app's surrounding JS/CSS, not about how the
+   * Import button hides or triggers its input.
+   */
+  _mountDiagnosticInput() {
+    const wrap = document.createElement("div");
+    wrap.style.cssText =
+      "position:fixed;top:56px;left:8px;right:8px;z-index:99998;" +
+      "background:#222;padding:10px;border-radius:8px;font-family:sans-serif;font-size:13px;color:#fff;";
+    wrap.innerHTML =
+      '<div style="margin-bottom:6px;">DOČASNÝ TEST — obyčejný input:</div>' +
+      '<input type="file" id="diagnostic-file-input" accept="image/*">';
+    document.body.appendChild(wrap);
+
+    document.getElementById("diagnostic-file-input").addEventListener("change", async (e) => {
+      const file = e.target.files && e.target.files[0];
+      const hint = document.querySelector(".empty-hint");
+      if (hint) {
+        hint.textContent = file
+          ? `DEBUG (diagnostic input): ${file.name} | ${file.size}B`
+          : "DEBUG (diagnostic input): change fired, files empty";
+      }
+      if (file) await this._handleFileSelected(file);
+    });
+  }
+
+  async _handleFileSelected(file) {
+    const hint = document.querySelector(".empty-hint");
+    try {
+      if (hint) hint.textContent = "DEBUG: decoding image…";
+      const bitmap = await this.engine.loadImageFromFile(file);
+      if (hint) hint.textContent = `DEBUG: decoded OK — ${bitmap.width}×${bitmap.height}`;
+      this._onImageLoaded(bitmap);
+    } catch (err) {
+      console.error("Slate Lab: failed to load image", err);
+      if (hint) hint.textContent = `DEBUG: decode FAILED — ${err && err.message ? err.message : err}`;
+      alert("Fotku se nepodařilo načíst. Zkus prosím jiný JPG soubor.");
+    }
+  }
+
+  _onImageLoaded(bitmap) {
+    this.emptyState.classList.add("hidden");
+    this.infoBtn.disabled = false;
+    this.exportBtn.disabled = false;
+    this.tabLooks.disabled = false;
+    this.tabEdit.disabled = false;
+    this.tabLab.disabled = false;
+
+    this.selectedLookId = "original";
+    this._buildThumbSource(bitmap);
+    this._renderLookList();
+    this._selectAdjustmentTab(ADJUSTMENTS_META[0].key);
+  }
+
+  // ---------- Looks drawer ----------
+
+  /** Every look's preview is generated from THIS photo, never a stock image. */
+  _buildThumbSource(bitmap) {
+    const size = 160;
+    const ratio = bitmap.width / bitmap.height;
+    const w = ratio >= 1 ? size : Math.round(size * ratio);
+    const h = ratio >= 1 ? Math.round(size / ratio) : size;
+
+    const off = document.createElement("canvas");
+    off.width = w;
+    off.height = h;
+    off.getContext("2d").drawImage(bitmap, 0, 0, w, h);
+    this._thumbCache = off;
+  }
+
+  _renderLookList() {
+    this.looksList.innerHTML = "";
+
+    for (const look of LOOKS) {
+      const btn = document.createElement("button");
+      btn.className = "look-item" + (look.id === this.selectedLookId ? " selected" : "");
+      btn.setAttribute("data-look-id", look.id);
+
+      const thumb = document.createElement("canvas");
+      thumb.className = "look-thumb";
+      thumb.width = 64;
+      thumb.height = 64;
+      this._paintThumb(thumb, look);
+
+      const label = document.createElement("span");
+      label.className = "look-name";
+      label.textContent = look.name;
+
+      btn.append(thumb, label);
+      btn.addEventListener("click", () => this._selectLook(look.id));
+      this.looksList.appendChild(btn);
+    }
+  }
+
+  _paintThumb(thumbCanvas, look) {
+    const ctx = thumbCanvas.getContext("2d");
+    ctx.clearRect(0, 0, thumbCanvas.width, thumbCanvas.height);
+    if (!this._thumbCache) return;
+
+    const src = this._thumbCache;
+    const scale = Math.max(thumbCanvas.width / src.width, thumbCanvas.height / src.height);
+    const dw = src.width * scale;
+    const dh = src.height * scale;
+    const dx = (thumbCanvas.width - dw) / 2;
+    const dy = (thumbCanvas.height - dh) / 2;
+
+    ctx.filter = look.filter;
+    ctx.drawImage(src, dx, dy, dw, dh);
+  }
+
+  _selectLook(lookId) {
+    this.selectedLookId = lookId;
+    this.engine.setLook(lookId);
+    for (const item of this.looksList.children) {
+      item.classList.toggle("selected", item.dataset.lookId === lookId);
+    }
+  }
+
+  // ---------- Edit drawer (compact, Lightroom-style) ----------
+
+  _buildEditTabs() {
+    this.editTabs.innerHTML = "";
+
+    for (const meta of ADJUSTMENTS_META) {
+      const tab = document.createElement("button");
+      tab.className = "edit-tab" + (meta.key === this.activeAdjustmentKey ? " active" : "");
+      tab.dataset.key = meta.key;
+      tab.textContent = meta.label;
+      tab.addEventListener("click", () => this._selectAdjustmentTab(meta.key));
+      this.editTabs.appendChild(tab);
+    }
+
+    this.editSlider.addEventListener("input", () => this._onSliderInput());
+    this.editSlider.addEventListener("pointerdown", () => this._onSliderDragStart());
+    const endDrag = () => this._onSliderDragEnd();
+    this.editSlider.addEventListener("pointerup", endDrag);
+    this.editSlider.addEventListener("pointercancel", endDrag);
+
+    this._selectAdjustmentTab(this.activeAdjustmentKey);
+  }
+
+  _selectAdjustmentTab(key) {
+    const meta = ADJUSTMENTS_META.find((m) => m.key === key);
+    if (!meta) return;
+    this.activeAdjustmentKey = key;
+
+    const currentValue = this.engine.getAdjustments()[key];
+    this.editSlider.min = String(meta.min);
+    this.editSlider.max = String(meta.max);
+    this.editSlider.value = String(currentValue);
+
+    this.editActiveLabel.textContent = meta.label;
+    this.editActiveValue.textContent = meta.format(currentValue);
+    this._paintSliderFill(meta, currentValue);
+    this._updateSliderBubble(meta, currentValue);
+
+    for (const tab of this.editTabs.children) {
+      tab.classList.toggle("active", tab.dataset.key === key);
+    }
+  }
+
+  _onSliderInput() {
+    const meta = ADJUSTMENTS_META.find((m) => m.key === this.activeAdjustmentKey);
+    const numeric = Number(this.editSlider.value);
+    this.editActiveValue.textContent = meta.format(numeric);
+    this._paintSliderFill(meta, numeric);
+    this._updateSliderBubble(meta, numeric);
+    this.engine.setAdjustment(this.activeAdjustmentKey, numeric);
+  }
+
+  _updateSliderBubble(meta, value) {
+    const percent = ((value - meta.min) / (meta.max - meta.min)) * 100;
+    this.sliderBubble.style.left = `${percent}%`;
+    this.sliderBubble.textContent = meta.format(value);
+  }
+
+  _paintSliderFill(meta, value) {
+    const zeroPct = ((0 - meta.min) / (meta.max - meta.min)) * 100;
+    const valuePct = ((value - meta.min) / (meta.max - meta.min)) * 100;
+    const [from, to] = valuePct >= zeroPct ? [zeroPct, valuePct] : [valuePct, zeroPct];
+
+    this.editSlider.style.background = `linear-gradient(to right,
+      var(--border) 0%, var(--border) ${from}%,
+      var(--accent) ${from}%, var(--accent) ${to}%,
+      var(--border) ${to}%, var(--border) 100%)`;
+  }
+
+  // ---------- Slider drag lifecycle ----------
+  // Nothing hides or moves — the panel stays exactly where it is. Only
+  // two things happen: the thumb scales up and the bubble tracking it
+  // appears, plus rendering quietly drops to draft resolution (engine.js)
+  // for the duration, invisible at this size but what keeps things
+  // smooth on older phones.
+
+  _onSliderDragStart() {
+    this.sliderWrap.classList.add("dragging");
+    this.sliderBubble.classList.add("visible");
+    this.engine.beginAdjustDrag();
+  }
+
+  _onSliderDragEnd() {
+    this.sliderWrap.classList.remove("dragging");
+    this.sliderBubble.classList.remove("visible");
+    this.engine.endAdjustDrag();
+  }
+
+  // ---------- Lab drawer (architecture placeholder) ----------
+
+  _buildLabTools() {
+    this.labTools.innerHTML = "";
+    for (const tool of LAB_TOOLS_META) {
+      const chip = document.createElement("div");
+      chip.className = "lab-chip";
+      chip.textContent = tool.label;
+      this.labTools.appendChild(chip);
+    }
+  }
+
+  // ---------- Info drawer ----------
+
+  _populateInfo() {
+    const info = this.engine.getPhotoInfo();
+    this.infoList.innerHTML = "";
+    if (!info) return;
+
+    const rows = [["Rozlišení", `${info.width} × ${info.height} px`]];
+    if (info.fileSizeBytes != null) rows.push(["Velikost souboru", formatFileSize(info.fileSizeBytes)]);
+    if (info.fileName) rows.push(["Soubor", info.fileName]);
+
+    const exif = info.exif;
+    if (exif) {
+      const camera = [exif.make, exif.model].filter(Boolean).join(" ");
+      if (camera) rows.push(["Fotoaparát", camera]);
+      if (exif.lensModel) rows.push(["Objektiv", exif.lensModel]);
+      if (exif.dateTaken) rows.push(["Pořízeno", exif.dateTaken]);
+      if (exif.exposureTime) rows.push(["Expozice", exif.exposureTime]);
+      if (exif.fNumber) rows.push(["Clona", exif.fNumber]);
+      if (exif.iso) rows.push(["ISO", exif.iso]);
+      if (exif.focalLength) rows.push(["Ohnisko", exif.focalLength]);
+    } else {
+      rows.push(["EXIF", "Nenalezeno"]);
+    }
+
+    for (const [label, value] of rows) {
+      const row = document.createElement("div");
+      row.className = "info-row";
+
+      const labelEl = document.createElement("span");
+      labelEl.className = "info-label";
+      labelEl.textContent = label;
+
+      const valueEl = document.createElement("span");
+      valueEl.className = "info-value";
+      valueEl.textContent = value;
+
+      row.append(labelEl, valueEl);
+      this.infoList.appendChild(row);
+    }
+
+    this._drawHistogram();
+  }
+
+  _drawHistogram() {
+    const histogram = this.engine.computeHistogram(64);
+    const canvas = this.histogramCanvas;
+    const cssWidth = canvas.clientWidth || 300;
+    const cssHeight = 90;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+    canvas.width = Math.round(cssWidth * dpr);
+    canvas.height = Math.round(cssHeight * dpr);
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+    const drawChannel = (bins, color) => {
+      const step = cssWidth / bins.length;
+      ctx.beginPath();
+      ctx.moveTo(0, cssHeight);
+      bins.forEach((v, i) => ctx.lineTo(i * step, cssHeight - v * cssHeight));
+      ctx.lineTo(cssWidth, cssHeight);
+      ctx.closePath();
+      ctx.fillStyle = color;
+      ctx.fill();
+    };
+
+    drawChannel(histogram.r, "rgba(255,90,90,0.55)");
+    drawChannel(histogram.g, "rgba(90,220,120,0.5)");
+    drawChannel(histogram.b, "rgba(90,150,255,0.55)");
+  }
+
+  // ---------- Drawer state (shared by all 4 drawers) ----------
+
+  _openDrawer(name) {
+    const wasOpen = this.openDrawerName === name;
+    this._closeAllDrawers();
+    if (wasOpen) return; // tapping the same tab again just closes it
+
+    const map = { looks: this.looksDrawer, edit: this.editDrawer, lab: this.labDrawer, info: this.infoDrawer };
+    const target = map[name];
+    target.classList.add("open");
+    target.setAttribute("aria-hidden", "false");
+    this.openDrawerName = name;
+    this._updateNavIndicator(name);
+
+    if (name === "info") this._populateInfo();
+  }
+
+  _closeAllDrawers() {
+    for (const drawer of [this.looksDrawer, this.editDrawer, this.labDrawer, this.infoDrawer]) {
+      drawer.classList.remove("open");
+      drawer.setAttribute("aria-hidden", "true");
+    }
+    this.openDrawerName = null;
+    this._updateNavIndicator(null);
+  }
+
+  /** Slides the little underline in the bottom nav to the active tab. */
+  _updateNavIndicator(name) {
+    const tabMap = { looks: this.tabLooks, edit: this.tabEdit, lab: this.tabLab };
+    const tab = tabMap[name];
+
+    for (const t of [this.tabLooks, this.tabEdit, this.tabLab]) {
+      t.classList.toggle("active", t === tab);
+    }
+
+    if (!tab) {
+      this.navIndicator.classList.remove("visible");
+      return;
+    }
+
+    const navRect = this.bottomNav.getBoundingClientRect();
+    const tabRect = tab.getBoundingClientRect();
+    this.navIndicator.style.left = `${tabRect.left - navRect.left}px`;
+    this.navIndicator.style.width = `${tabRect.width}px`;
+    this.navIndicator.classList.add("visible");
+  }
+
+  // ---------- Photo gestures: tap-to-close, hold-for-original, double-tap zoom ----------
+
+  _bindPhotoGestures() {
+    this.zoomViewport.addEventListener("pointerdown", (e) => this._onPhotoPointerDown(e));
+    this.zoomViewport.addEventListener("pointerup", (e) => this._onPhotoPointerUp(e));
+    this.zoomViewport.addEventListener("pointercancel", () => this._onPhotoPointerCancel());
+    this.zoomViewport.addEventListener("pointerleave", () => this._onPhotoPointerCancel());
+  }
+
+  _onPhotoPointerDown(e) {
+    if (!this.engine.hasImage) return;
+
+    // A tap on the photo while a panel is open just dismisses the panel —
+    // no separate "close" button to hunt for.
+    if (this.openDrawerName) {
+      this._closeAllDrawers();
+      this._pointerDownAt = null;
+      return;
+    }
+
+    this._pointerDownAt = { x: e.clientX, y: e.clientY, time: performance.now() };
+    clearTimeout(this._holdTimer);
+    this._holdTimer = setTimeout(() => {
+      this.canvasStack.classList.add("show-original");
+    }, HOLD_THRESHOLD_MS);
+  }
+
+  _onPhotoPointerUp(e) {
+    clearTimeout(this._holdTimer);
+    const wasShowingOriginal = this.canvasStack.classList.contains("show-original");
+    this.canvasStack.classList.remove("show-original");
+
+    if (wasShowingOriginal) {
+      this._lastTap = null;
+      return;
+    }
+
+    const down = this._pointerDownAt;
+    if (!down) return;
+    const elapsed = performance.now() - down.time;
+    const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+    if (elapsed >= HOLD_THRESHOLD_MS || moved > DOUBLE_TAP_MAX_MOVE) {
+      this._lastTap = null;
+      return;
+    }
+
+    const now = performance.now();
+    const prev = this._lastTap;
+    if (prev && now - prev.time < DOUBLE_TAP_MS && Math.hypot(e.clientX - prev.x, e.clientY - prev.y) < DOUBLE_TAP_MAX_MOVE) {
+      this.engine.toggleZoom(e.clientX, e.clientY);
+      this.zoomViewport.classList.toggle("zoomed", this.engine.isZoomed);
+      this._lastTap = null;
+    } else {
+      this._lastTap = { time: now, x: e.clientX, y: e.clientY };
+    }
+  }
+
+  _onPhotoPointerCancel() {
+    clearTimeout(this._holdTimer);
+    this.canvasStack.classList.remove("show-original");
+    this._lastTap = null;
+  }
+
+  // ---------- Export ----------
+
+  async _handleExport() {
+    if (!this.engine.hasImage) return;
+    this.exportBtn.disabled = true;
+    const label = this.exportBtn.querySelector("span");
+    const originalLabel = label.textContent;
+    label.textContent = "…";
+    try {
+      const blob = await this.engine.exportBlob(0.95);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `slate-lab-${Date.now()}.jpg`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Slate Lab: export failed", err);
+      alert("Export se nepovedl, zkus to prosím znovu.");
+    } finally {
+      this.exportBtn.disabled = false;
+      label.textContent = originalLabel;
+    }
+  }
+}
+
+SlateLab.UI = UI;
+})();
+
+</script>
+
+<!-- ===== app.js ===== -->
+<script>
+// app.js
+// The only job of this file: construct the engine, construct the UI,
+// hand the engine to the UI, and start it. Loaded last, after looks.js,
+// engine.js, and ui.js have all attached their pieces to window.SlateLab.
+
+(function () {
+  "use strict";
+  const SlateLab = window.SlateLab || {};
+
+  function main() {
+    const engine = new SlateLab.PhotoEngine({
+      canvas: document.getElementById("photo-canvas"),
+      originalCanvas: document.getElementById("photo-canvas-original"),
+      stage: document.getElementById("stage"),
+      zoomViewport: document.getElementById("zoom-viewport"),
+    });
+
+    const ui = new SlateLab.UI(engine);
+    ui.init();
+  }
+
+  document.addEventListener("DOMContentLoaded", main);
+})();
+
+</script>
+</body>
+</html>
