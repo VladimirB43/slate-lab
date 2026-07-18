@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Slate Lab</title>
+<style>
+:root {
+  --bg: #121212;
+  --stage-bg: #000000;
+  --surface: #1c1c1e;
+  --surface-raised: #262628;
+  --text: #f2f0ec;
+  --text-dim: #8a8a8e;
+  --accent: #e2a248;      /* warm safelight amber */
+  --accent-dim: #7a5a2c;
+  --border: #2e2e30;
+  --bar-height: 78px;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  overflow: hidden;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ---------- Stage ---------- */
+
+#stage {
+  position: fixed;
+  inset: 0;
+  bottom: calc(var(--bar-height) + var(--safe-bottom));
+  background: var(--stage-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#photo-canvas {
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+}
+
+#photo-canvas.hidden { display: none; }
+
+#empty-state {
+  text-align: center;
+  color: var(--text-dim);
+  pointer-events: none;
+}
+
+#empty-state.hidden { display: none; }
+
+.empty-title {
+  font-size: 15px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--text);
+  margin: 0 0 10px;
+}
+
+.empty-hint {
+  font-size: 14px;
+  margin: 0;
+}
+
+.empty-hint strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.export-btn {
+  position: absolute;
+  top: max(16px, env(safe-area-inset-top));
+  right: 16px;
+  background: rgba(28, 28, 30, 0.82);
+  backdrop-filter: blur(6px);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 16px;
+  z-index: 5;
+}
+
+.export-btn:active {
+  background: var(--accent-dim);
+}
+
+.export-btn.hidden {
+  display: none;
+}
+
+/* ---------- Bottom bar ---------- */
+
+#bottom-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(var(--bar-height) + var(--safe-bottom));
+  padding-bottom: var(--safe-bottom);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  z-index: 20;
+}
+
+.bar-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  padding: 10px 22px;
+  border-radius: 10px;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.bar-btn:disabled { opacity: 0.35; }
+
+.bar-btn:not(:disabled):active {
+  background: var(--surface-raised);
+}
+
+.bar-btn.active {
+  color: var(--accent);
+}
+
+.bar-btn-primary {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #1a1305;
+  font-size: 26px;
+  line-height: 1;
+  font-weight: 400;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bar-btn-primary:active {
+  background: #cf9236;
+}
+
+/* ---------- Looks drawer ---------- */
+
+.drawer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--bar-height) + var(--safe-bottom));
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  border-radius: 16px 16px 0 0;
+  transform: translateY(100%);
+  transition: transform 0.25s cubic-bezier(0.32, 0.72, 0, 1);
+  z-index: 10;
+  padding: 10px 0 18px;
+}
+
+.drawer.open {
+  transform: translateY(0);
+}
+
+.drawer-handle {
+  width: 36px;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  margin: 0 auto 12px;
+}
+
+.looks-list {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding: 0 16px;
+  scrollbar-width: none;
+}
+
+.looks-list::-webkit-scrollbar { display: none; }
+
+.look-item {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.look-thumb {
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  object-fit: cover;
+  border: 2px solid transparent;
+  background: var(--surface-raised);
+  display: block;
+}
+
+.look-item.selected .look-thumb {
+  border-color: var(--accent);
+}
+
+.look-name {
+  font-size: 11px;
+  color: var(--text-dim);
+  max-width: 70px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.look-item.selected .look-name {
+  color: var(--accent);
+}
+</style>
+</head>
+<body>
+
+  <!-- Photo stage: canvas fills as much of the screen as possible -->
+  <main id="stage">
+    <canvas id="photo-canvas"></canvas>
+    <div id="empty-state">
+      <p class="empty-title">Slate Lab</p>
+      <p class="empty-hint">Klepni na <strong>+</strong> a vyber fotku</p>
+    </div>
+    <button id="btn-export" class="export-btn hidden" aria-label="Exportovat fotku">Export</button>
+  </main>
+
+  <!-- Looks drawer, slides up from the bottom bar -->
+  <section id="looks-drawer" class="drawer" aria-hidden="true">
+    <div class="drawer-handle" id="drawer-handle"></div>
+    <div id="looks-list" class="looks-list"></div>
+  </section>
+
+  <!-- Bottom UI: Edit / Import / Looks -->
+  <nav id="bottom-bar">
+    <button id="btn-edit" class="bar-btn" disabled>Edit</button>
+    <button id="btn-import" class="bar-btn bar-btn-primary" aria-label="Importovat fotku">+</button>
+    <button id="btn-looks" class="bar-btn" disabled>Looks</button>
+  </nav>
+
+<!-- ===== looks.js ===== -->
+<script>
+(function () {
+  "use strict";
+  var SlateLab = (window.SlateLab = window.SlateLab || {});
+
+  var LOOKS = [
+    { id: "original", name: "Original", filter: "none" },
+    {
+      id: "slate-natural",
+      name: "Slate Natural",
+      filter: "contrast(1.08) saturate(0.88) brightness(1.04) sepia(0.03)",
+    },
+    {
+      id: "slate-chrome",
+      name: "Slate Chrome",
+      filter: "contrast(1.20) saturate(0.70) sepia(0.12) hue-rotate(-8deg) brightness(0.98)",
+    },
+    {
+      id: "slate-portra",
+      name: "Slate Portra",
+      filter: "contrast(1.05) saturate(1.08) sepia(0.16) hue-rotate(-6deg) brightness(1.07)",
+    },
+    {
+      id: "slate-gold",
+      name: "Slate Gold",
+      filter: "contrast(1.14) saturate(1.20) sepia(0.20) hue-rotate(-10deg) brightness(1.05)",
+    },
+    {
+      id: "slate-mono",
+      name: "Slate Mono",
+      filter: "grayscale(1) contrast(1.25) brightness(1.05)",
+    },
+  ];
+
+  function getLookById(id) {
+    for (var i = 0; i < LOOKS.length; i++) {
+      if (LOOKS[i].id === id) return LOOKS[i];
+    }
+    return LOOKS[0];
+  }
+
+  SlateLab.LOOKS = LOOKS;
+  SlateLab.getLookById = getLookById;
+})();
+</script>
+
+<!-- ===== engine.js ===== -->
+<script>
+(function () {
+  "use strict";
+  var SlateLab = (window.SlateLab = window.SlateLab || {});
+  var getLookById = SlateLab.getLookById;
+
+  function PhotoEngine(canvas, stageEl) {
+    this.canvas = canvas;
+    this.stageEl = stageEl;
+    this.ctx = canvas.getContext("2d");
+    this.image = null;
+    this.currentLook = getLookById("original");
+
+    var self = this;
+    window.addEventListener("resize", function () {
+      self.render();
+    });
+  }
+
+  Object.defineProperty(PhotoEngine.prototype, "hasImage", {
+    get: function () {
+      return this.image !== null;
+    },
+  });
+
+  PhotoEngine.prototype.loadImageFromFile = async function (file) {
+    var bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+    this.setImage(bitmap);
+    return bitmap;
+  };
+
+  PhotoEngine.prototype.setImage = function (bitmap) {
+    if (this.image && this.image.close) this.image.close();
+    this.image = bitmap;
+    this.currentLook = getLookById("original");
+    this.render();
+  };
+
+  PhotoEngine.prototype.setLook = function (lookId) {
+    this.currentLook = getLookById(lookId);
+    this.render();
+  };
+
+  PhotoEngine.prototype.render = function () {
+    if (!this.image) return;
+
+    var fit = this._fitToStage();
+    var drawW = fit.width;
+    var drawH = fit.height;
+    var dpr = Math.min(window.devicePixelRatio || 1, 3);
+
+    this.canvas.width = Math.round(drawW * dpr);
+    this.canvas.height = Math.round(drawH * dpr);
+    this.canvas.style.width = drawW + "px";
+    this.canvas.style.height = drawH + "px";
+
+    var ctx = this.ctx;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.filter = this.currentLook.filter;
+    ctx.clearRect(0, 0, drawW, drawH);
+    ctx.drawImage(this.image, 0, 0, drawW, drawH);
+  };
+
+  PhotoEngine.prototype._fitToStage = function () {
+    var boxW = this.stageEl.clientWidth;
+    var boxH = this.stageEl.clientHeight;
+    var imgRatio = this.image.width / this.image.height;
+    var boxRatio = boxW / boxH;
+
+    if (imgRatio > boxRatio) {
+      return { width: boxW, height: boxW / imgRatio };
+    }
+    return { width: boxH * imgRatio, height: boxH };
+  };
+
+  PhotoEngine.prototype.exportBlob = function (quality) {
+    quality = quality || 0.92;
+    var self = this;
+    if (!this.image) throw new Error("No image loaded to export.");
+
+    var off = document.createElement("canvas");
+    off.width = this.image.width;
+    off.height = this.image.height;
+    var offCtx = off.getContext("2d");
+    offCtx.filter = this.currentLook.filter;
+    offCtx.drawImage(this.image, 0, 0);
+
+    return new Promise(function (resolve, reject) {
+      off.toBlob(
+        function (blob) {
+          if (blob) resolve(blob);
+          else reject(new Error("Export failed."));
+        },
+        "image/jpeg",
+        quality
+      );
+    });
+  };
+
+  SlateLab.PhotoEngine = PhotoEngine;
+})();
+</script>
+
+<!-- ===== ui.js ===== -->
+<script>
+(function () {
+  "use strict";
+  var SlateLab = (window.SlateLab = window.SlateLab || {});
+  var LOOKS = SlateLab.LOOKS;
+
+  function UI(engine) {
+    this.engine = engine;
+
+    this.stage = document.getElementById("stage");
+    this.canvas = document.getElementById("photo-canvas");
+    this.emptyState = document.getElementById("empty-state");
+    this.exportBtn = document.getElementById("btn-export");
+
+    this.editBtn = document.getElementById("btn-edit");
+    this.importBtn = document.getElementById("btn-import");
+    this.looksBtn = document.getElementById("btn-looks");
+
+    this.drawer = document.getElementById("looks-drawer");
+    this.drawerHandle = document.getElementById("drawer-handle");
+    this.looksList = document.getElementById("looks-list");
+
+    this.selectedLookId = "original";
+    this._thumbCache = null;
+  }
+
+  UI.prototype.init = function () {
+    var self = this;
+
+    this.importBtn.addEventListener("click", function () {
+      self._pickImage();
+    });
+
+    this.looksBtn.addEventListener("click", function () {
+      self.toggleDrawer();
+    });
+    this.drawerHandle.addEventListener("click", function () {
+      self.toggleDrawer();
+    });
+
+    this.exportBtn.addEventListener("click", function () {
+      self._handleExport();
+    });
+
+    this._renderLookList();
+  };
+
+  /**
+   * Opens a photo picker. Prefers the modern File System Access API
+   * (window.showOpenFilePicker) — a different browser mechanism from
+   * the classic <input type="file"> change event. Falls back to a
+   * freshly created <input type="file">, .click()'d directly inside
+   * this user-gesture handler, for browsers without the modern API.
+   */
+  UI.prototype._pickImage = async function () {
+    var self = this;
+
+    if (window.showOpenFilePicker) {
+      try {
+        var handles = await window.showOpenFilePicker({
+          types: [{ description: "Obrázky", accept: { "image/*": [".png", ".jpg", ".jpeg", ".webp", ".heic"] } }],
+          multiple: false,
+        });
+        var file = await handles[0].getFile();
+        if (file) await self._handleFileSelected(file);
+        return;
+      } catch (err) {
+        if (err && err.name === "AbortError") return;
+        console.error("Slate Lab: showOpenFilePicker failed, falling back", err);
+      }
+    }
+
+    var input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.addEventListener(
+      "change",
+      async function (e) {
+        var f = e.target.files && e.target.files[0];
+        if (f) await self._handleFileSelected(f);
+      },
+      { once: true }
+    );
+    input.click();
+  };
+
+  UI.prototype._handleFileSelected = async function (file) {
+    try {
+      var bitmap = await this.engine.loadImageFromFile(file);
+      this._onImageLoaded(bitmap);
+    } catch (err) {
+      console.error("Slate Lab: failed to load image", err);
+      alert("Fotku se nepodařilo načíst. Zkus prosím jiný soubor.");
+    }
+  };
+
+  UI.prototype._onImageLoaded = function (bitmap) {
+    this.emptyState.classList.add("hidden");
+    this.canvas.classList.remove("hidden");
+    this.exportBtn.classList.remove("hidden");
+    this.editBtn.disabled = false;
+    this.looksBtn.disabled = false;
+
+    this.selectedLookId = "original";
+    this._buildThumbSource(bitmap);
+    this._renderLookList();
+  };
+
+  UI.prototype._buildThumbSource = function (bitmap) {
+    var size = 160;
+    var ratio = bitmap.width / bitmap.height;
+    var w = ratio >= 1 ? size : Math.round(size * ratio);
+    var h = ratio >= 1 ? Math.round(size / ratio) : size;
+
+    var off = document.createElement("canvas");
+    off.width = w;
+    off.height = h;
+    off.getContext("2d").drawImage(bitmap, 0, 0, w, h);
+    this._thumbCache = off;
+  };
+
+  UI.prototype._renderLookList = function () {
+    var self = this;
+    this.looksList.innerHTML = "";
+
+    LOOKS.forEach(function (look) {
+      var btn = document.createElement("button");
+      btn.className = "look-item" + (look.id === self.selectedLookId ? " selected" : "");
+      btn.setAttribute("data-look-id", look.id);
+
+      var thumb = document.createElement("canvas");
+      thumb.className = "look-thumb";
+      thumb.width = 64;
+      thumb.height = 64;
+      self._paintThumb(thumb, look);
+
+      var label = document.createElement("span");
+      label.className = "look-name";
+      label.textContent = look.name;
+
+      btn.appendChild(thumb);
+      btn.appendChild(label);
+      btn.addEventListener("click", function () {
+        self._selectLook(look.id);
+      });
+      self.looksList.appendChild(btn);
+    });
+  };
+
+  UI.prototype._paintThumb = function (thumbCanvas, look) {
+    var ctx = thumbCanvas.getContext("2d");
+    ctx.clearRect(0, 0, thumbCanvas.width, thumbCanvas.height);
+    if (!this._thumbCache) return;
+
+    var src = this._thumbCache;
+    var scale = Math.max(thumbCanvas.width / src.width, thumbCanvas.height / src.height);
+    var dw = src.width * scale;
+    var dh = src.height * scale;
+    var dx = (thumbCanvas.width - dw) / 2;
+    var dy = (thumbCanvas.height - dh) / 2;
+
+    ctx.filter = look.filter;
+    ctx.drawImage(src, dx, dy, dw, dh);
+  };
+
+  UI.prototype._selectLook = function (lookId) {
+    this.selectedLookId = lookId;
+    this.engine.setLook(lookId);
+
+    var children = this.looksList.children;
+    for (var i = 0; i < children.length; i++) {
+      var item = children[i];
+      if (item.dataset.lookId === lookId) item.classList.add("selected");
+      else item.classList.remove("selected");
+    }
+  };
+
+  UI.prototype.toggleDrawer = function () {
+    var isOpen = this.drawer.classList.toggle("open");
+    this.drawer.setAttribute("aria-hidden", String(!isOpen));
+    this.looksBtn.classList.toggle("active", isOpen);
+  };
+
+  UI.prototype._handleExport = async function () {
+    if (!this.engine.hasImage) return;
+    this.exportBtn.disabled = true;
+    this.exportBtn.textContent = "Exportuji…";
+    try {
+      var blob = await this.engine.exportBlob();
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = "slate-lab-" + Date.now() + ".jpg";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Slate Lab: export failed", err);
+      alert("Export se nepovedl, zkus to prosím znovu.");
+    } finally {
+      this.exportBtn.disabled = false;
+      this.exportBtn.textContent = "Export";
+    }
+  };
+
+  SlateLab.UI = UI;
+})();
+</script>
+
+<!-- ===== app.js ===== -->
+<script>
+(function () {
+  "use strict";
+  var SlateLab = window.SlateLab || {};
+
+  function main() {
+    var canvas = document.getElementById("photo-canvas");
+    var stage = document.getElementById("stage");
+
+    var engine = new SlateLab.PhotoEngine(canvas, stage);
+    var ui = new SlateLab.UI(engine);
+    ui.init();
+  }
+
+  document.addEventListener("DOMContentLoaded", main);
+})();
+</script>
+</body>
+</html>
